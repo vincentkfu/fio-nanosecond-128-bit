@@ -37,9 +37,9 @@ void update_rusage_stat(struct thread_data *td)
 	struct thread_stat *ts = &td->ts;
 
 	fio_getrusage(&td->ru_end);
-	ts->usr_time += mtime_since(&td->ru_start.ru_utime,
+	ts->usr_time += mtime_since_tv(&td->ru_start.ru_utime,
 					&td->ru_end.ru_utime);
-	ts->sys_time += mtime_since(&td->ru_start.ru_stime,
+	ts->sys_time += mtime_since_tv(&td->ru_start.ru_stime,
 					&td->ru_end.ru_stime);
 	ts->ctx += td->ru_end.ru_nvcsw + td->ru_end.ru_nivcsw
 			- (td->ru_start.ru_nvcsw + td->ru_start.ru_nivcsw);
@@ -1846,22 +1846,22 @@ void __show_running_run_stats(void)
 {
 	struct thread_data *td;
 	unsigned long long *rt;
-	struct timeval tv;
+	struct timespec ts;
 	int i;
 
 	fio_mutex_down(stat_mutex);
 
 	rt = malloc(thread_number * sizeof(unsigned long long));
-	fio_gettime(&tv, NULL);
+	fio_gettime(&ts, NULL);
 
 	for_each_td(td, i) {
 		td->update_rusage = 1;
 		td->ts.io_bytes[DDIR_READ] = td->io_bytes[DDIR_READ];
 		td->ts.io_bytes[DDIR_WRITE] = td->io_bytes[DDIR_WRITE];
 		td->ts.io_bytes[DDIR_TRIM] = td->io_bytes[DDIR_TRIM];
-		td->ts.total_run_time = mtime_since(&td->epoch, &tv);
+		td->ts.total_run_time = mtime_since(&td->epoch, &ts);
 
-		rt[i] = mtime_since(&td->start, &tv);
+		rt[i] = mtime_since(&td->start, &ts);
 		if (td_read(td) && td->ts.io_bytes[DDIR_READ])
 			td->ts.runtime[DDIR_READ] += rt[i];
 		if (td_write(td) && td->ts.io_bytes[DDIR_WRITE])
@@ -1896,7 +1896,7 @@ void __show_running_run_stats(void)
 }
 
 static int status_interval_init;
-static struct timeval status_time;
+static struct timespec status_time;
 static int status_file_disabled;
 
 #define FIO_STATUS_FILE		"fio-dump-status"
@@ -2427,7 +2427,7 @@ void add_bw_sample(struct thread_data *td, struct io_u *io_u,
 	td_io_u_unlock(td);
 }
 
-static int add_bw_samples(struct thread_data *td, struct timeval *t)
+static int add_bw_samples(struct thread_data *td, struct timespec *t)
 {
 	struct thread_stat *ts = &td->ts;
 	unsigned long spent, rate;
@@ -2474,7 +2474,7 @@ static int add_bw_samples(struct thread_data *td, struct timeval *t)
 		td->stat_io_bytes[ddir] = td->this_io_bytes[ddir];
 	}
 
-	timeval_add_msec(&td->bw_sample_time, td->o.bw_avg_time);
+	timespec_add_msec(&td->bw_sample_time, td->o.bw_avg_time);
 
 	td_io_u_unlock(td);
 
@@ -2502,7 +2502,7 @@ void add_iops_sample(struct thread_data *td, struct io_u *io_u,
 	td_io_u_unlock(td);
 }
 
-static int add_iops_samples(struct thread_data *td, struct timeval *t)
+static int add_iops_samples(struct thread_data *td, struct timespec *t)
 {
 	struct thread_stat *ts = &td->ts;
 	unsigned long spent, iops;
@@ -2549,7 +2549,7 @@ static int add_iops_samples(struct thread_data *td, struct timeval *t)
 		td->stat_io_blocks[ddir] = td->this_io_blocks[ddir];
 	}
 
-	timeval_add_msec(&td->iops_sample_time, td->o.iops_avg_time);
+	timespec_add_msec(&td->iops_sample_time, td->o.iops_avg_time);
 
 	td_io_u_unlock(td);
 
@@ -2567,7 +2567,7 @@ int calc_log_samples(void)
 {
 	struct thread_data *td;
 	unsigned int next = ~0U, tmp;
-	struct timeval now;
+	struct timespec now;
 	int i;
 
 	fio_gettime(&now, NULL);

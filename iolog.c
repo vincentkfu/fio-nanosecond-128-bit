@@ -64,7 +64,7 @@ static void iolog_delay(struct thread_data *td, unsigned long delay)
 {
 	uint64_t usec = utime_since_now(&td->last_issue);
 	uint64_t this_delay;
-	struct timeval tv;
+	struct timespec ts;
 
 	if (delay < td->time_offset) {
 		td->time_offset = 0;
@@ -77,7 +77,7 @@ static void iolog_delay(struct thread_data *td, unsigned long delay)
 
 	delay -= usec;
 
-	fio_gettime(&tv, NULL);
+	fio_gettime(&ts, NULL);
 	while (delay && !td->terminate) {
 		this_delay = delay;
 		if (this_delay > 500000)
@@ -87,7 +87,7 @@ static void iolog_delay(struct thread_data *td, unsigned long delay)
 		delay -= this_delay;
 	}
 
-	usec = utime_since_now(&tv);
+	usec = utime_since_now(&ts);
 	if (usec > delay)
 		td->time_offset = usec - delay;
 	else
