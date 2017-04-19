@@ -9,22 +9,26 @@
 
 #include "fio.h"
 #include "smalloc.h"
-
+// #include "clock_mult_shift.h"
 #include "hash.h"
 #include "os/os.h"
 
 #if defined(ARCH_HAVE_CPU_CLOCK)
-#ifndef ARCH_CPU_CLOCK_CYCLES_PER_USEC
-static unsigned long cycles_per_usec;
-static unsigned long long cycles_start;
-static unsigned long long clock_mult;
-static unsigned int clock_shift;
-#define MAX_CLOCK_SEC 365*24*60*60
-#endif
 #ifdef ARCH_CPU_CLOCK_WRAPS
 static unsigned int cycles_wrap;
 #endif
-#endif
+#ifndef ARCH_CPU_CLOCK_CYCLES_PER_USEC
+static unsigned int clock_shift;
+static unsigned long long cycles_start;
+#define MAX_CLOCK_SEC 1ULL*24*60*60
+#ifdef CONFIG_128_BIT_INTEGERS
+static __uint128_t clock_mult;
+#else
+static unsigned long long clock_mult;
+#endif // CONFIG_128_BIT_INTEGERS
+#endif // ndef ARCH_CPU_CLOCK_CYCLES_PER_USEC
+#endif // ARCH_HAVE_CPU_CLOCK
+
 int tsc_reliable = 0;
 
 struct tv_valid {
@@ -191,8 +195,12 @@ static void __fio_gettime(struct timespec *tp)
 		nsecs = t / ARCH_CPU_CLOCK_CYCLES_PER_USEC * 1000;
 #else
 		t -= cycles_start;
-		nsecs = (t * clock_mult) >> clock_shift;
-#endif
+#ifdef CONFIG_128_BIT_INTEGERS
+		nsecs = ((__uint128_t)t * clock_mult) >> clock_shift;
+#else
+		nsecs = 0ULL;
+#endif // CONFIG_128_BIT_INTEGERS
+#endif // ARCH_CPU_CLOCK_CYCLES_PER_USEC
 		tv->last_cycles = t;
 		tv->last_tv_valid = 1;
 
@@ -226,6 +234,74 @@ void fio_gettime(struct timespec *tp, void fio_unused *caller)
 }
 
 #if defined(ARCH_HAVE_CPU_CLOCK) && !defined(ARCH_CPU_CLOCK_CYCLES_PER_USEC)
+#ifdef CONFIG_128_BIT_INTEGERS
+void clock_mult_shift(unsigned long cycles_per_usec, __uint128_t *mult, unsigned int *shift)
+{
+	unsigned int sft = 0;
+	unsigned long long max_ticks;
+	__uint128_t max_mult, tmp;
+
+	max_ticks = MAX_CLOCK_SEC * cycles_per_usec * 1000000ULL;
+	max_mult = ((__uint128_t) ULLONG_MAX) << 64 | ULLONG_MAX;
+        max_mult /= max_ticks;
+        dprint(FD_TIME, "\n\nmax_ticks=%llu, __builtin_clzll=%d, max_mult=0x%016llx%016llx\n",
+		max_ticks, __builtin_clzll(max_ticks), 
+		(unsigned long long) (max_mult >> 64),
+		(unsigned long long) max_mult);
+
+        /*
+         * Find the largest shift count that will produce
+         * a multiplier that does not exceed max_mult
+         */
+        tmp = max_mult * cycles_per_usec / 1000;
+        while (tmp > 1) {
+                tmp >>= 1;
+                sft++;
+                dprint(FD_TIME, "tmp=0x%016llx%016llx, sft=%u\n", 
+			(unsigned long long) (tmp >> 64),
+			(unsigned long long) tmp, sft);
+        }
+
+        *mult = ((__uint128_t)1 << sft) * 1000 / cycles_per_usec;
+        *shift = sft;
+
+        dprint(FD_TIME, "clock_mult=0x%016llx%016llx\n",
+		(unsigned long long) (*mult >> 64),
+		(unsigned long long) *mult);
+}
+
+#else
+
+void clock_mult_shift(unsigned long cycles_per_usec, unsigned long long *mult, unsigned int *shift)
+{
+	unsigned int sft = 0;
+	unsigned long long max_ticks;
+	unsigned long long max_mult, tmp;
+
+	max_ticks = MAX_CLOCK_SEC * cycles_per_usec * 1000000ULL;
+	max_mult = ULLONG_MAX;
+        max_mult /= max_ticks;
+        dprint(FD_TIME, "\n\nmax_ticks=%llu, __builtin_clzll=%d, max_mult=%llu\n",
+		max_ticks, __builtin_clzll(max_ticks), max_mult);
+
+        /*
+         * Find the largest shift count that will produce
+         * a multiplier that does not exceed max_mult
+         */
+        tmp = max_mult * cycles_per_usec / 1000;
+        while (tmp > 1) {
+                tmp >>= 1;
+                sft++;
+                dprint(FD_TIME, "tmp=%llu, sft=%u\n", tmp, sft);
+        }
+
+        *mult = (1ULL << sft) * 1000 / cycles_per_usec;
+        *shift = sft;
+
+        dprint(FD_TIME, "clock_mult=%llu\n", *mult);
+}
+#endif // CONFIG_128_BIT_INTEGERS
+
 static unsigned long get_cycles_per_usec(void)
 {
 	struct timespec s, e;
@@ -261,8 +337,8 @@ static int calibrate_cpu_clock(void)
 {
 	double delta, mean, S;
 	uint64_t minc, maxc, avg, cycles[NR_TIME_ITERS];
-	int i, samples, sft = 0;
-	unsigned long long tmp, max_ticks, max_mult;
+	int i, samples;
+	unsigned long cycles_per_usec;
 
 	cycles[0] = get_cycles_per_usec();
 	S = delta = mean = 0.0;
@@ -305,34 +381,18 @@ static int calibrate_cpu_clock(void)
 
 	avg /= samples;
 	cycles_per_usec = avg;
-	dprint(FD_TIME, "avg: %llu\n", (unsigned long long) avg);
+	dprint(FD_TIME, "avg cycles per usec: %llu\n", (unsigned long long) avg);
 	dprint(FD_TIME, "min=%llu, max=%llu, mean=%f, S=%f\n",
 			(unsigned long long) minc,
 			(unsigned long long) maxc, mean, S);
 
-	max_ticks = MAX_CLOCK_SEC * cycles_per_usec * 1000000ULL;
-        max_mult = ULLONG_MAX / max_ticks;
-        dprint(FD_TIME, "\n\nmax_ticks=%llu, __builtin_clzll=%d, max_mult=%llu\n",
-		max_ticks, __builtin_clzll(max_ticks), max_mult);
-
-        /*
-         * Find the largest shift count that will produce
-         * a multiplier that does not exceed max_mult
-         */
-        tmp = max_mult * cycles_per_usec / 1000;
-        while (tmp > 1) {
-                tmp >>= 1;
-                sft++;
-                dprint(FD_TIME, "tmp=%llu, sft=%u\n", tmp, sft);
-        }
-
-        clock_shift = sft;
-        clock_mult = (1ULL << sft) * 1000 / cycles_per_usec;
-	dprint(FD_TIME, "clock_shift=%u, clock_mult=%llu\n", clock_shift, clock_mult);
+	clock_mult_shift(cycles_per_usec, &clock_mult, &clock_shift);
 	cycles_start = get_cpu_clock();
-	dprint(FD_TIME, "cycles_start=%llu\n", cycles_start);
+	dprint(FD_TIME, "clock_shift=%u, cycles_start=%llu\n",
+		clock_shift, cycles_start);
 	return 0;
 }
+
 #else
 static int calibrate_cpu_clock(void)
 {

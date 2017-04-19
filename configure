@@ -1990,6 +1990,23 @@ EOF
 fi
 echo "march_armv8_a_crc_crypto      $march_armv8_a_crc_crypto"
 
+##########################################
+# check for 128-bit integer support
+if test "$support_128_bit_integers" != "yes" ; then
+  support_128_bit_integers="no"
+fi
+cat > $TMPC << EOF
+int main(void)
+{
+  __uint128_t test;
+  return 0;
+}
+EOF
+if compile_prog "" ""; then
+  support_128_bit_integers="yes"
+fi
+echo "support_128_bit_integers      $support_128_bit_integers"
+
 
 #############################################################################
 
@@ -2209,6 +2226,9 @@ if test "$have_bool" = "yes" ; then
 fi
 if test "$disable_opt" = "yes" ; then
   output_sym "CONFIG_DISABLE_OPTIMIZATIONS"
+fi
+if test "$support_128_bit_integers" = "yes" ; then
+  output_sym "CONFIG_128_BIT_INTEGERS"
 fi
 
 if test "$zlib" = "no" ; then
